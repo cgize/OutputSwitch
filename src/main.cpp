@@ -22,6 +22,7 @@ namespace {
 constexpr WCHAR APP_CLASS[]    = L"OutputSwitchClass";
 constexpr WCHAR APP_TITLE[]    = L"OutputSwitch";
 constexpr WCHAR NOTIFICATION_TITLE[] = L"Audio Output Switcher";
+constexpr WCHAR SWITCH_TITLE[] = L"Audio output switched";
 constexpr WCHAR MUTEX_NAME[]   = L"Local\\OutputSwitch_8D44B8CB";
 constexpr WCHAR INI_FILE[]     = L"OutputSwitch.ini";
 constexpr WCHAR CFG_SECTION[]  = L"Hotkey";
@@ -29,6 +30,9 @@ constexpr WCHAR CFG_MODS[]     = L"Modifiers";
 constexpr WCHAR CFG_KEY[]      = L"Key";
 constexpr WCHAR CFG_UI[]       = L"UI";
 constexpr WCHAR CFG_NOTIF[]    = L"Notifications";
+
+constexpr WCHAR STARTUP_REG_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr WCHAR STARTUP_REG_VAL[] = L"OutputSwitch";
 
 constexpr WCHAR DEFAULT_MODS[] = L"Ctrl+Alt";
 constexpr WCHAR DEFAULT_KEY[]  = L"S";
@@ -47,8 +51,11 @@ struct AppState {
     UINT  vk           = 0;
     BOOL  notifications = TRUE;
     BOOL  hotkeyReg    = FALSE;
+    BOOL  startupOn    = FALSE;
+    WCHAR exePath[MAX_PATH]  = {};
     WCHAR iniPath[MAX_PATH]  = {};
     WCHAR deviceName[256]    = {};
+    WCHAR shortcutText[128]  = {};
 };
 
 AppState g_state;
@@ -61,6 +68,123 @@ void GetExeDir(WCHAR* buf, DWORD size)
     GetModuleFileNameW(nullptr, buf, size);
     WCHAR* last = wcsrchr(buf, L'\\');
     if (last) *last = L'\0';
+}
+
+void GetExeFullName(WCHAR* buf, DWORD size)
+{
+    GetModuleFileNameW(nullptr, buf, size);
+}
+
+// ---------------------------------------------------------------------------
+// Convert a virtual key code to a human-readable name
+// ---------------------------------------------------------------------------
+bool VkToString(UINT vk, std::wstring& out)
+{
+    if (vk >= L'A' && vk <= L'Z') { out = (WCHAR)vk; return true; }
+    if (vk >= L'0' && vk <= L'9') { out = (WCHAR)vk; return true; }
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        wchar_t buf[8];
+        swprintf_s(buf, L"F%u", vk - VK_F1 + 1);
+        out = buf;
+        return true;
+    }
+    switch (vk) {
+    case VK_SPACE:   out = L"Space";    return true;
+    case VK_TAB:     out = L"Tab";      return true;
+    case VK_HOME:    out = L"Home";     return true;
+    case VK_END:     out = L"End";      return true;
+    case VK_INSERT:  out = L"Insert";   return true;
+    case VK_DELETE:  out = L"Delete";   return true;
+    case VK_PRIOR:   out = L"PageUp";   return true;
+    case VK_NEXT:    out = L"PageDown"; return true;
+    case VK_LEFT:    out = L"Left";     return true;
+    case VK_RIGHT:   out = L"Right";    return true;
+    case VK_UP:      out = L"Up";       return true;
+    case VK_DOWN:    out = L"Down";     return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Build a display string like "Shortcut: Ctrl + Alt + S"
+// ---------------------------------------------------------------------------
+void BuildShortcutString(UINT mods, UINT vk, WCHAR* out, size_t outSize)
+{
+    std::wstring s = L"Shortcut: ";
+    if (mods & MOD_CONTROL) s += L"Ctrl + ";
+    if (mods & MOD_ALT)     s += L"Alt + ";
+    if (mods & MOD_SHIFT)   s += L"Shift + ";
+    if (mods & MOD_WIN)     s += L"Win + ";
+
+    std::wstring keyName;
+    if (!VkToString(vk, keyName)) keyName = L"?";
+    s += keyName;
+
+    wcsncpy_s(out, outSize, s.c_str(), _TRUNCATE);
+}
+
+// ---------------------------------------------------------------------------
+// Read the "Start with Windows" status from HKCU\...\Run
+// ---------------------------------------------------------------------------
+bool IsStartupEnabled()
+{
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, STARTUP_REG_KEY, 0,
+                      KEY_READ, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+    DWORD type = 0;
+    LSTATUS st = RegQueryValueExW(hKey, STARTUP_REG_VAL, nullptr,
+                                  &type, nullptr, nullptr);
+    RegCloseKey(hKey);
+    return st == ERROR_SUCCESS;
+}
+
+// ---------------------------------------------------------------------------
+// Enable / disable the "Start with Windows" entry in HKCU\...\Run
+// (No administrator privileges required.)
+// ---------------------------------------------------------------------------
+void SetStartupEnabled(bool enable)
+{
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, STARTUP_REG_KEY, 0,
+                      KEY_WRITE, &hKey) != ERROR_SUCCESS) {
+        return;
+    }
+
+    if (enable) {
+        RegSetValueExW(hKey, STARTUP_REG_VAL, 0, REG_SZ,
+                       reinterpret_cast<const BYTE*>(g_state.exePath),
+                       static_cast<DWORD>((wcslen(g_state.exePath) + 1) * sizeof(WCHAR)));
+    } else {
+        RegDeleteValueW(hKey, STARTUP_REG_VAL);
+    }
+    RegCloseKey(hKey);
+}
+
+// ---------------------------------------------------------------------------
+// Create OutputSwitch.ini with default values if it does not exist
+// ---------------------------------------------------------------------------
+void EnsureDefaultIniExists(LPCWSTR path)
+{
+    if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) return;
+
+    const WCHAR content[] =
+        L"[Hotkey]\r\n"
+        L"Modifiers=Ctrl+Alt\r\n"
+        L"Key=S\r\n"
+        L"\r\n"
+        L"[UI]\r\n"
+        L"Notifications=1\r\n";
+
+    HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, nullptr,
+                           CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+
+    DWORD written = 0;
+    WriteFile(h, L"\xFEFF", sizeof(WCHAR), &written, nullptr);
+    WriteFile(h, content, sizeof(content) - sizeof(WCHAR), &written, nullptr);
+    CloseHandle(h);
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +281,7 @@ void ShowError(LPCWSTR msg)
 // ---------------------------------------------------------------------------
 // Show tray notification (NIF_INFO balloon)
 // ---------------------------------------------------------------------------
-void ShowNotification(LPCWSTR title, LPCWSTR msg)
+void ShowNotification(LPCWSTR title, LPCWSTR msg, DWORD infoFlags)
 {
     NOTIFYICONDATAW nid = { sizeof(nid) };
     nid.hWnd  = g_state.hwnd;
@@ -165,7 +289,7 @@ void ShowNotification(LPCWSTR title, LPCWSTR msg)
     nid.uFlags = NIF_INFO;
     wcsncpy_s(nid.szInfoTitle, title, _TRUNCATE);
     wcsncpy_s(nid.szInfo, msg, _TRUNCATE);
-    nid.dwInfoFlags = NIIF_NONE;
+    nid.dwInfoFlags = infoFlags;
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
@@ -285,7 +409,7 @@ std::wstring RotateToNextDevice()
 {
     std::vector<EndpointInfo> endpoints;
     if (!EnumActiveEndpoints(endpoints) || endpoints.empty()) {
-        ShowNotification(NOTIFICATION_TITLE, L"No active output devices");
+        ShowNotification(NOTIFICATION_TITLE, L"No active output devices", NIIF_WARNING);
         return {};
     }
 
@@ -307,7 +431,7 @@ std::wstring RotateToNextDevice()
     }
 
     if (!SetDefaultEndpointAll(endpoints[idx].id.c_str())) {
-        ShowNotification(NOTIFICATION_TITLE, L"Could not change the audio output device");
+        ShowNotification(NOTIFICATION_TITLE, L"Could not change the audio output device", NIIF_WARNING);
         return {};
     }
 
@@ -338,23 +462,42 @@ HMENU BuildTrayMenu(LPCWSTR deviceName)
     mii.fType = MFT_SEPARATOR;
     InsertMenuItemW(hMenu, 1, TRUE, &mii);
 
-    // Reload
+    // Shortcut info (grayed / disabled, non-selectable)
+    mii.fMask = MIIM_FTYPE | MIIM_ID | MIIM_STRING | MIIM_STATE;
+    mii.fType = MFT_STRING;
+    mii.fState = MFS_DISABLED;
+    mii.wID = IDM_SHORTCUT;
+    mii.dwTypeData = const_cast<LPWSTR>(g_state.shortcutText);
+    InsertMenuItemW(hMenu, 2, TRUE, &mii);
+
+    // Start with Windows (checkable)
+    mii.fState = MFS_ENABLED | (g_state.startupOn ? MFS_CHECKED : MFS_UNCHECKED);
+    mii.wID = IDM_STARTUP;
+    mii.dwTypeData = const_cast<LPWSTR>(L"Start with Windows");
+    InsertMenuItemW(hMenu, 3, TRUE, &mii);
+
+    // Separator
+    mii.fMask = MIIM_FTYPE;
+    mii.fType = MFT_SEPARATOR;
+    InsertMenuItemW(hMenu, 4, TRUE, &mii);
+
+    // Open configuration
     mii.fMask = MIIM_FTYPE | MIIM_ID | MIIM_STRING;
     mii.fType = MFT_STRING;
     mii.fState = 0;
     mii.wID = IDM_OPEN_CONFIG;
     mii.dwTypeData = const_cast<LPWSTR>(L"Open configuration");
-    InsertMenuItemW(hMenu, 2, TRUE, &mii);
+    InsertMenuItemW(hMenu, 5, TRUE, &mii);
 
-    // Reload
+    // Reload configuration
     mii.wID = IDM_RELOAD;
     mii.dwTypeData = const_cast<LPWSTR>(L"Reload configuration");
-    InsertMenuItemW(hMenu, 3, TRUE, &mii);
+    InsertMenuItemW(hMenu, 6, TRUE, &mii);
 
     // Exit
     mii.wID = IDM_EXIT;
     mii.dwTypeData = const_cast<LPWSTR>(L"Exit");
-    InsertMenuItemW(hMenu, 4, TRUE, &mii);
+    InsertMenuItemW(hMenu, 7, TRUE, &mii);
 
     return hMenu;
 }
@@ -469,6 +612,9 @@ void ReloadConfig()
     g_state.modifiers  = newMods;
     g_state.vk         = newVk;
     g_state.hotkeyReg  = TRUE;
+
+    BuildShortcutString(g_state.modifiers, g_state.vk,
+                        g_state.shortcutText, _countof(g_state.shortcutText));
 }
 
 // ---------------------------------------------------------------------------
@@ -499,7 +645,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam == NOTIFICATION_TIMER_ID) {
             KillTimer(hwnd, NOTIFICATION_TIMER_ID);
             if (g_state.notifications && g_state.deviceName[0]) {
-                ShowNotification(NOTIFICATION_TITLE, g_state.deviceName);
+                ShowNotification(SWITCH_TITLE, g_state.deviceName, NIIF_INFO);
             }
             return 0;
         }
@@ -509,8 +655,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         WORD id = LOWORD(wParam);
         switch (id) {
         case IDM_OPEN_CONFIG:
+            EnsureDefaultIniExists(g_state.iniPath);
             ShellExecuteW(hwnd, L"open", g_state.iniPath, nullptr, nullptr, SW_SHOWNORMAL);
             return 0;
+        case IDM_STARTUP: {
+            bool enable = !g_state.startupOn;
+            SetStartupEnabled(enable);
+            g_state.startupOn = (IsStartupEnabled() != FALSE);
+            return 0;
+        }
         case IDM_RELOAD:
             ReloadConfig();
             return 0;
@@ -599,12 +752,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         return 1;
     }
 
-    // 3. Get INI path
+    // 3. Get INI path and exe path
+    GetExeFullName(g_state.exePath, MAX_PATH);
     GetExeDir(g_state.iniPath, MAX_PATH);
     wcsncat_s(g_state.iniPath, L"\\", _TRUNCATE);
     wcsncat_s(g_state.iniPath, INI_FILE, _TRUNCATE);
 
-    // 4. Read config
+    // 4. Read config (OutputSwitch.ini is optional: when the file is
+    //    missing, Windows returns the default values silently.)
     int notif = DEFAULT_NOTIF;
     if (!ReadConfig(g_state.iniPath, &g_state.modifiers, &g_state.vk, &notif)) {
         ShowError(L"OutputSwitch.ini has an invalid format.\n"
@@ -614,6 +769,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         notif             = 1;
     }
     g_state.notifications = (notif != 0);
+    BuildShortcutString(g_state.modifiers, g_state.vk,
+                        g_state.shortcutText, _countof(g_state.shortcutText));
+
+    // Auto-start status from HKCU\...\Run (no admin rights required)
+    g_state.startupOn = IsStartupEnabled();
 
     // 5. Register window class
     if (!RegisterAppClass(hInstance)) {
