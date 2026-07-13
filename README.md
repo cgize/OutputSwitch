@@ -55,6 +55,15 @@ Right-click the tray icon and toggle **Start with Windows**. The preference is w
 - Windows
 - At least two active audio output devices to cycle between
 
+## Build Size
+
+Run `build.bat` to produce the smaller executable (about 59 KB). It requires
+the x64 [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+to be installed on the target computer.
+
+Run `build.bat standalone` to produce a self-contained executable (about 183
+KB) that embeds the Microsoft C runtime.
+
 ## License
 
 Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, modify, and share OutputSwitch for noncommercial purposes. Commercial use is not permitted.

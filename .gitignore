@@ -1,5 +1,4 @@
-# Local build script and user configuration
-/build.bat
+# Local user configuration
 /OutputSwitch.ini
 
 # Build output
