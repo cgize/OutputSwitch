@@ -1,0 +1,18 @@
+# Local build script and user configuration
+/build.bat
+/OutputSwitch.ini
+
+# Build output
+/build/
+/dist/
+*.exe
+*.obj
+*.res
+*.pdb
+*.ilk
+*.idb
+
+# Visual Studio local state
+/.vs/
+*.suo
+*.user
