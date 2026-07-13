@@ -3,7 +3,7 @@
 [![Latest release](https://img.shields.io/github/v/release/cgize/OutputSwitch?display_name=tag&label=release)](https://github.com/cgize/OutputSwitch/releases)
 [![License](https://img.shields.io/github/license/cgize/OutputSwitch)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/cgize/OutputSwitch)](https://github.com/cgize/OutputSwitch/commits/main)
-[![Repository size](https://img.shields.io/github/repo-size/cgize/OutputSwitch)](https://github.com/cgize/OutputSwitch)
+[![Downloads](https://img.shields.io/github/downloads/cgize/OutputSwitch/total?label=downloads)](https://github.com/cgize/OutputSwitch/releases)
 
 OutputSwitch is an ultra-lightweight Windows utility that lets you switch between your active audio output devices in seconds. It runs quietly in the system tray, so your speakers, headphones, monitor audio, or USB headset are always one keyboard shortcut away.
 
@@ -53,4 +53,4 @@ Set `Notifications=0` if you prefer to switch devices without a notification. Se
 
 ## License
 
-MIT License.
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, modify, and share OutputSwitch for noncommercial purposes. Commercial use is not permitted.

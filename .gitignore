@@ -11,6 +11,7 @@
 *.pdb
 *.ilk
 *.idb
+*.svg
 
 # Visual Studio local state
 /.vs/
