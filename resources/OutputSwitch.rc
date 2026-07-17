@@ -15,7 +15,7 @@ BEGIN
         BLOCK "040904E4"
         BEGIN
             VALUE "CompanyName",      "OutputSwitch"
-            VALUE "FileDescription",  "Audio output device switcher"
+            VALUE "FileDescription",  "Sound Device Switcher"
             VALUE "FileVersion",      "1.0.1.0"
             VALUE "InternalName",     "OutputSwitch"
             VALUE "LegalCopyright",   "MIT License"

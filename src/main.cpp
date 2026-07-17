@@ -21,7 +21,7 @@ namespace {
 
 constexpr WCHAR APP_CLASS[]    = L"OutputSwitchClass";
 constexpr WCHAR APP_TITLE[]    = L"OutputSwitch";
-constexpr WCHAR NOTIFICATION_TITLE[] = L"Audio Output Switcher";
+constexpr WCHAR NOTIFICATION_TITLE[] = L"Sound Device Switcher";
 constexpr WCHAR SWITCH_TITLE[] = L"Audio output switched";
 constexpr WCHAR MUTEX_NAME[]   = L"Local\\OutputSwitch_8D44B8CB";
 constexpr WCHAR INI_FILE[]     = L"OutputSwitch.ini";
