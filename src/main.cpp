@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>
@@ -14,15 +15,17 @@
 #pragma comment(lib, "Shell32.lib")
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "Propsys.lib")
+#pragma comment(lib, "Gdi32.lib")
+#pragma comment(lib, "Dwmapi.lib")
 
 using Microsoft::WRL::ComPtr;
 
 namespace {
 
 constexpr WCHAR APP_CLASS[]    = L"OutputSwitchClass";
+constexpr WCHAR OSD_CLASS[]    = L"OutputSwitchOsdClass";
 constexpr WCHAR APP_TITLE[]    = L"OutputSwitch";
 constexpr WCHAR NOTIFICATION_TITLE[] = L"Sound Device Switcher";
-constexpr WCHAR SWITCH_TITLE[] = L"Audio output switched";
 constexpr WCHAR MUTEX_NAME[]   = L"Local\\OutputSwitch_8D44B8CB";
 constexpr WCHAR INI_FILE[]     = L"OutputSwitch.ini";
 constexpr WCHAR CFG_SECTION[]  = L"Hotkey";
@@ -39,12 +42,20 @@ constexpr WCHAR DEFAULT_KEY[]  = L"S";
 constexpr int   DEFAULT_NOTIF  = 1;
 constexpr UINT_PTR NOTIFICATION_TIMER_ID = 1;
 constexpr UINT NOTIFICATION_DEBOUNCE_MS = 500;
+constexpr UINT_PTR OSD_HIDE_TIMER_ID = 1;
+constexpr UINT_PTR OSD_FADE_TIMER_ID = 2;
+constexpr UINT OSD_VISIBLE_MS = 1600;
+constexpr UINT OSD_FADE_INTERVAL_MS = 30;
+constexpr int OSD_WIDTH = 340;
+constexpr int OSD_HEIGHT = 142;
+constexpr int OSD_ALPHA = 235;
 
 // ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
 struct AppState {
     HWND  hwnd        = nullptr;
+    HWND  hOsd        = nullptr;
     HMENU hTrayMenu   = nullptr;
     UINT  uTmsgTaskbar = 0;
     UINT  modifiers    = 0;
@@ -55,7 +66,9 @@ struct AppState {
     WCHAR exePath[MAX_PATH]  = {};
     WCHAR iniPath[MAX_PATH]  = {};
     WCHAR deviceName[256]    = {};
+    WCHAR osdText[256]       = {};
     WCHAR shortcutText[128]  = {};
+    int   osdAlpha           = OSD_ALPHA;
 };
 
 AppState g_state;
@@ -291,6 +304,130 @@ void ShowNotification(LPCWSTR title, LPCWSTR msg, DWORD infoFlags)
     wcsncpy_s(nid.szInfo, msg, _TRUNCATE);
     nid.dwInfoFlags = infoFlags;
     Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+LRESULT CALLBACK OsdWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+
+        HBRUSH background = CreateSolidBrush(RGB(18, 18, 20));
+        FillRect(hdc, &rc, background);
+        DeleteObject(background);
+
+        const int cx = rc.right / 2;
+        const int cy = 43;
+        HBRUSH iconBrush = CreateSolidBrush(RGB(250, 250, 250));
+        HGDIOBJ oldBrush = SelectObject(hdc, iconBrush);
+        HGDIOBJ oldPen = SelectObject(hdc, GetStockObject(NULL_PEN));
+        RECT speaker = { cx - 28, cy - 8, cx - 17, cy + 8 };
+        FillRect(hdc, &speaker, iconBrush);
+        POINT cone[] = {
+            { cx - 17, cy - 8 }, { cx - 5, cy - 19 },
+            { cx - 5, cy + 19 }, { cx - 17, cy + 8 }
+        };
+        Polygon(hdc, cone, _countof(cone));
+        SelectObject(hdc, oldPen);
+        SelectObject(hdc, oldBrush);
+        DeleteObject(iconBrush);
+
+        HPEN wavePen = CreatePen(PS_SOLID, 3, RGB(250, 250, 250));
+        oldPen = SelectObject(hdc, wavePen);
+        POINT innerWave[] = {
+            { cx + 2, cy - 10 }, { cx + 11, cy - 5 }, { cx + 11, cy + 5 }, { cx + 2, cy + 10 }
+        };
+        POINT outerWave[] = {
+            { cx + 9, cy - 18 }, { cx + 25, cy - 9 }, { cx + 25, cy + 9 }, { cx + 9, cy + 18 }
+        };
+        PolyBezier(hdc, innerWave, _countof(innerWave));
+        PolyBezier(hdc, outerWave, _countof(outerWave));
+        SelectObject(hdc, oldPen);
+        DeleteObject(wavePen);
+
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(250, 250, 250));
+        HFONT font = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        HGDIOBJ oldFont = SelectObject(hdc, font);
+        RECT textRect = { 24, 88, rc.right - 24, 119 };
+        DrawTextW(hdc, g_state.osdText, -1, &textRect,
+                  DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(hdc, oldFont);
+        DeleteObject(font);
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_TIMER:
+        if (wParam == OSD_HIDE_TIMER_ID) {
+            KillTimer(hwnd, OSD_HIDE_TIMER_ID);
+            SetTimer(hwnd, OSD_FADE_TIMER_ID, OSD_FADE_INTERVAL_MS, nullptr);
+            return 0;
+        }
+        if (wParam == OSD_FADE_TIMER_ID) {
+            g_state.osdAlpha -= 24;
+            if (g_state.osdAlpha <= 0) {
+                KillTimer(hwnd, OSD_FADE_TIMER_ID);
+                ShowWindow(hwnd, SW_HIDE);
+            } else {
+                SetLayeredWindowAttributes(hwnd, 0,
+                    static_cast<BYTE>(g_state.osdAlpha), LWA_ALPHA);
+            }
+            return 0;
+        }
+        break;
+
+    case WM_NCHITTEST:
+        return HTTRANSPARENT;
+
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+void ShowDeviceOsd(LPCWSTR deviceName)
+{
+    if (!g_state.hOsd) {
+        g_state.hOsd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+            OSD_CLASS, nullptr, WS_POPUP, 0, 0, OSD_WIDTH, OSD_HEIGHT,
+            g_state.hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!g_state.hOsd) return;
+
+        DWM_WINDOW_CORNER_PREFERENCE corners = DWMWCP_ROUND;
+        DwmSetWindowAttribute(g_state.hOsd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                              &corners, sizeof(corners));
+        COLORREF borderColor = RGB(55, 55, 60);
+        DwmSetWindowAttribute(g_state.hOsd, DWMWA_BORDER_COLOR,
+                              &borderColor, sizeof(borderColor));
+    }
+
+    wcsncpy_s(g_state.osdText, deviceName, _TRUNCATE);
+    g_state.osdAlpha = OSD_ALPHA;
+    KillTimer(g_state.hOsd, OSD_HIDE_TIMER_ID);
+    KillTimer(g_state.hOsd, OSD_FADE_TIMER_ID);
+    SetLayeredWindowAttributes(g_state.hOsd, 0, OSD_ALPHA, LWA_ALPHA);
+
+    HWND foreground = GetForegroundWindow();
+    HMONITOR monitor = MonitorFromWindow(foreground ? foreground : g_state.hwnd,
+                                         MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO monitorInfo = { sizeof(monitorInfo) };
+    GetMonitorInfoW(monitor, &monitorInfo);
+    const RECT& work = monitorInfo.rcWork;
+    int x = work.left + ((work.right - work.left) - OSD_WIDTH) / 2;
+    int y = work.bottom - OSD_HEIGHT - 72;
+
+    InvalidateRect(g_state.hOsd, nullptr, TRUE);
+    SetWindowPos(g_state.hOsd, HWND_TOPMOST, x, y, OSD_WIDTH, OSD_HEIGHT,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    SetTimer(g_state.hOsd, OSD_HIDE_TIMER_ID, OSD_VISIBLE_MS, nullptr);
 }
 
 void QueueDeviceNotification()
@@ -645,7 +782,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam == NOTIFICATION_TIMER_ID) {
             KillTimer(hwnd, NOTIFICATION_TIMER_ID);
             if (g_state.notifications && g_state.deviceName[0]) {
-                ShowNotification(SWITCH_TITLE, g_state.deviceName, NIIF_INFO);
+                ShowDeviceOsd(g_state.deviceName);
             }
             return 0;
         }
@@ -676,6 +813,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_DESTROY:
         KillTimer(hwnd, NOTIFICATION_TIMER_ID);
+        if (g_state.hOsd) {
+            DestroyWindow(g_state.hOsd);
+            g_state.hOsd = nullptr;
+        }
         RemoveTrayIcon();
         if (g_state.hTrayMenu) {
             DestroyMenu(g_state.hTrayMenu);
@@ -725,7 +866,14 @@ bool RegisterAppClass(HINSTANCE hInst)
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
     wc.lpszClassName = APP_CLASS;
-    return RegisterClassExW(&wc) != 0;
+    if (!RegisterClassExW(&wc)) return false;
+
+    WNDCLASSEXW osdClass = { sizeof(osdClass) };
+    osdClass.lpfnWndProc   = OsdWndProc;
+    osdClass.hInstance     = hInst;
+    osdClass.lpszClassName = OSD_CLASS;
+    osdClass.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+    return RegisterClassExW(&osdClass) != 0;
 }
 
 } // anonymous namespace
