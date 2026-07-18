@@ -319,41 +319,22 @@ LRESULT CALLBACK OsdWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         FillRect(hdc, &rc, background);
         DeleteObject(background);
 
-        const int cx = rc.right / 2;
-        const int cy = 43;
-        HBRUSH iconBrush = CreateSolidBrush(RGB(250, 250, 250));
-        HGDIOBJ oldBrush = SelectObject(hdc, iconBrush);
-        HGDIOBJ oldPen = SelectObject(hdc, GetStockObject(NULL_PEN));
-        RECT speaker = { cx - 28, cy - 8, cx - 17, cy + 8 };
-        FillRect(hdc, &speaker, iconBrush);
-        POINT cone[] = {
-            { cx - 17, cy - 8 }, { cx - 5, cy - 19 },
-            { cx - 5, cy + 19 }, { cx - 17, cy + 8 }
-        };
-        Polygon(hdc, cone, _countof(cone));
-        SelectObject(hdc, oldPen);
-        SelectObject(hdc, oldBrush);
-        DeleteObject(iconBrush);
-
-        HPEN wavePen = CreatePen(PS_SOLID, 3, RGB(250, 250, 250));
-        oldPen = SelectObject(hdc, wavePen);
-        POINT innerWave[] = {
-            { cx + 2, cy - 10 }, { cx + 11, cy - 5 }, { cx + 11, cy + 5 }, { cx + 2, cy + 10 }
-        };
-        POINT outerWave[] = {
-            { cx + 9, cy - 18 }, { cx + 25, cy - 9 }, { cx + 25, cy + 9 }, { cx + 9, cy + 18 }
-        };
-        PolyBezier(hdc, innerWave, _countof(innerWave));
-        PolyBezier(hdc, outerWave, _countof(outerWave));
-        SelectObject(hdc, oldPen);
-        DeleteObject(wavePen);
-
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(250, 250, 250));
+        HFONT iconFont = CreateFontW(-46, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                     ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe MDL2 Assets");
+        HGDIOBJ oldFont = SelectObject(hdc, iconFont);
+        RECT iconRect = { 0, 18, rc.right, 75 };
+        DrawTextW(hdc, L"\xE767", 1, &iconRect,
+                  DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        SelectObject(hdc, oldFont);
+        DeleteObject(iconFont);
+
         HFONT font = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-        HGDIOBJ oldFont = SelectObject(hdc, font);
+        oldFont = SelectObject(hdc, font);
         RECT textRect = { 24, 88, rc.right - 24, 119 };
         DrawTextW(hdc, g_state.osdText, -1, &textRect,
                   DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
