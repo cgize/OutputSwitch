@@ -4,8 +4,8 @@
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <wrl/client.h>
-#include <string>
-#include <vector>
+#include <climits>
+#include <cwchar>
 
 #include "PolicyConfig.h"
 #include "../resources/resource.h"
@@ -35,8 +35,6 @@ constexpr WCHAR CFG_UI[]       = L"UI";
 constexpr WCHAR CFG_NOTIF[]    = L"Notifications";
 
 constexpr WCHAR STARTUP_REG_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-constexpr WCHAR STARTUP_REG_VAL[] = L"OutputSwitch";
-
 constexpr WCHAR DEFAULT_MODS[] = L"Ctrl+Alt";
 constexpr WCHAR DEFAULT_KEY[]  = L"S";
 constexpr int   DEFAULT_NOTIF  = 1;
@@ -54,24 +52,23 @@ constexpr int OSD_ALPHA = 235;
 // Application state
 // ---------------------------------------------------------------------------
 struct AppState {
-    HWND  hwnd        = nullptr;
-    HWND  hOsd        = nullptr;
-    HMENU hTrayMenu   = nullptr;
-    UINT  uTmsgTaskbar = 0;
-    UINT  modifiers    = 0;
-    UINT  vk           = 0;
-    BOOL  notifications = TRUE;
-    BOOL  hotkeyReg    = FALSE;
-    BOOL  startupOn    = FALSE;
-    WCHAR exePath[MAX_PATH]  = {};
-    WCHAR iniPath[MAX_PATH]  = {};
-    WCHAR deviceName[256]    = {};
-    WCHAR osdText[256]       = {};
-    WCHAR shortcutText[128]  = {};
-    int   osdAlpha           = OSD_ALPHA;
+    HWND  hwnd;
+    HWND  hOsd;
+    HMENU hTrayMenu;
+    UINT  uTmsgTaskbar;
+    UINT  modifiers;
+    UINT  vk;
+    BOOL  notifications;
+    BOOL  hotkeyReg;
+    BOOL  startupOn;
+    WCHAR exePath[MAX_PATH];
+    WCHAR iniPath[MAX_PATH];
+    WCHAR deviceName[256];
+    WCHAR shortcutText[128];
+    int   osdAlpha;
 };
 
-AppState g_state;
+AppState g_state = {};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -91,31 +88,87 @@ void GetExeFullName(WCHAR* buf, DWORD size)
 // ---------------------------------------------------------------------------
 // Convert a virtual key code to a human-readable name
 // ---------------------------------------------------------------------------
-bool VkToString(UINT vk, std::wstring& out)
+bool TokenEquals(LPCWSTR text, size_t length, LPCWSTR expected)
 {
-    if (vk >= L'A' && vk <= L'Z') { out = (WCHAR)vk; return true; }
-    if (vk >= L'0' && vk <= L'9') { out = (WCHAR)vk; return true; }
-    if (vk >= VK_F1 && vk <= VK_F24) {
-        wchar_t buf[8];
-        swprintf_s(buf, L"F%u", vk - VK_F1 + 1);
-        out = buf;
+    for (size_t i = 0; i < length; ++i) {
+        if (!expected[i] || text[i] != expected[i]) return false;
+    }
+    return expected[length] == L'\0';
+}
+
+int ParseInteger(LPCWSTR text)
+{
+    while (*text == L' ' || (*text >= L'\t' && *text <= L'\r')) ++text;
+    int sign = 1;
+    if (*text == L'-') { sign = -1; ++text; }
+    else if (*text == L'+') { ++text; }
+
+    unsigned long value = 0;
+    unsigned long limit = sign > 0 ? INT_MAX : static_cast<unsigned long>(INT_MAX) + 1;
+    while (*text >= L'0' && *text <= L'9') {
+        unsigned long digit = static_cast<unsigned long>(*text++ - L'0');
+        if (value > (limit - digit) / 10) return sign > 0 ? INT_MAX : INT_MIN;
+        value = value * 10 + digit;
+    }
+    if (sign > 0) return static_cast<int>(value);
+    if (value == static_cast<unsigned long>(INT_MAX) + 1) return INT_MIN;
+    return -static_cast<int>(value);
+}
+
+void FormatHex(HRESULT value, WCHAR (&out)[9])
+{
+    constexpr WCHAR digits[] = L"0123456789ABCDEF";
+    unsigned long number = static_cast<unsigned long>(value);
+    for (int i = 7; i >= 0; --i) {
+        out[i] = digits[number & 0xF];
+        number >>= 4;
+    }
+    out[8] = L'\0';
+}
+
+bool VkToString(UINT vk, WCHAR* out, size_t outSize)
+{
+    if (vk >= L'A' && vk <= L'Z') {
+        out[0] = static_cast<WCHAR>(vk);
+        out[1] = L'\0';
         return true;
     }
-    switch (vk) {
-    case VK_SPACE:   out = L"Space";    return true;
-    case VK_TAB:     out = L"Tab";      return true;
-    case VK_HOME:    out = L"Home";     return true;
-    case VK_END:     out = L"End";      return true;
-    case VK_INSERT:  out = L"Insert";   return true;
-    case VK_DELETE:  out = L"Delete";   return true;
-    case VK_PRIOR:   out = L"PageUp";   return true;
-    case VK_NEXT:    out = L"PageDown"; return true;
-    case VK_LEFT:    out = L"Left";     return true;
-    case VK_RIGHT:   out = L"Right";    return true;
-    case VK_UP:      out = L"Up";       return true;
-    case VK_DOWN:    out = L"Down";     return true;
+    if (vk >= L'0' && vk <= L'9') {
+        out[0] = static_cast<WCHAR>(vk);
+        out[1] = L'\0';
+        return true;
     }
-    return false;
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        UINT number = vk - VK_F1 + 1;
+        out[0] = L'F';
+        if (number >= 10) {
+            out[1] = static_cast<WCHAR>(L'0' + number / 10);
+            out[2] = static_cast<WCHAR>(L'0' + number % 10);
+            out[3] = L'\0';
+        } else {
+            out[1] = static_cast<WCHAR>(L'0' + number);
+            out[2] = L'\0';
+        }
+        return true;
+    }
+    LPCWSTR name = nullptr;
+    switch (vk) {
+    case VK_SPACE:   name = L"Space";    break;
+    case VK_TAB:     name = L"Tab";      break;
+    case VK_HOME:    name = L"Home";     break;
+    case VK_END:     name = L"End";      break;
+    case VK_INSERT:  name = L"Insert";   break;
+    case VK_DELETE:  name = L"Delete";   break;
+    case VK_PRIOR:   name = L"PageUp";   break;
+    case VK_NEXT:    name = L"PageDown"; break;
+    case VK_LEFT:    name = L"Left";     break;
+    case VK_RIGHT:   name = L"Right";    break;
+    case VK_UP:      name = L"Up";       break;
+    case VK_DOWN:    name = L"Down";     break;
+    }
+    if (!name) return false;
+    wcsncpy_s(out, outSize, name, _TRUNCATE);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,17 +176,15 @@ bool VkToString(UINT vk, std::wstring& out)
 // ---------------------------------------------------------------------------
 void BuildShortcutString(UINT mods, UINT vk, WCHAR* out, size_t outSize)
 {
-    std::wstring s = L"Shortcut: ";
-    if (mods & MOD_CONTROL) s += L"Ctrl + ";
-    if (mods & MOD_ALT)     s += L"Alt + ";
-    if (mods & MOD_SHIFT)   s += L"Shift + ";
-    if (mods & MOD_WIN)     s += L"Win + ";
+    wcscpy_s(out, outSize, L"Shortcut: ");
+    if (mods & MOD_CONTROL) wcscat_s(out, outSize, L"Ctrl + ");
+    if (mods & MOD_ALT)     wcscat_s(out, outSize, L"Alt + ");
+    if (mods & MOD_SHIFT)   wcscat_s(out, outSize, L"Shift + ");
+    if (mods & MOD_WIN)     wcscat_s(out, outSize, L"Win + ");
 
-    std::wstring keyName;
-    if (!VkToString(vk, keyName)) keyName = L"?";
-    s += keyName;
-
-    wcsncpy_s(out, outSize, s.c_str(), _TRUNCATE);
+    WCHAR keyName[16];
+    if (!VkToString(vk, keyName, _countof(keyName))) wcscpy_s(keyName, L"?");
+    wcscat_s(out, outSize, keyName);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +198,7 @@ bool IsStartupEnabled()
         return false;
     }
     DWORD type = 0;
-    LSTATUS st = RegQueryValueExW(hKey, STARTUP_REG_VAL, nullptr,
+    LSTATUS st = RegQueryValueExW(hKey, APP_TITLE, nullptr,
                                   &type, nullptr, nullptr);
     RegCloseKey(hKey);
     return st == ERROR_SUCCESS;
@@ -166,11 +217,11 @@ void SetStartupEnabled(bool enable)
     }
 
     if (enable) {
-        RegSetValueExW(hKey, STARTUP_REG_VAL, 0, REG_SZ,
+        RegSetValueExW(hKey, APP_TITLE, 0, REG_SZ,
                        reinterpret_cast<const BYTE*>(g_state.exePath),
                        static_cast<DWORD>((wcslen(g_state.exePath) + 1) * sizeof(WCHAR)));
     } else {
-        RegDeleteValueW(hKey, STARTUP_REG_VAL);
+        RegDeleteValueW(hKey, APP_TITLE);
     }
     RegCloseKey(hKey);
 }
@@ -207,19 +258,18 @@ bool ParseModifiers(LPCWSTR str, UINT* out)
 {
     if (!str || !*str) return false;
     UINT mods = 0;
-    std::wstring s(str);
-    size_t pos = 0;
-    while (pos < s.length()) {
-        size_t end = s.find(L'+', pos);
-        std::wstring token = (end == std::wstring::npos)
-            ? s.substr(pos) : s.substr(pos, end - pos);
-        if (token == L"Ctrl")  mods |= MOD_CONTROL;
-        else if (token == L"Alt")   mods |= MOD_ALT;
-        else if (token == L"Shift") mods |= MOD_SHIFT;
-        else if (token == L"Win")   mods |= MOD_WIN;
+    LPCWSTR token = str;
+    while (*token) {
+        LPCWSTR end = token;
+        while (*end && *end != L'+') ++end;
+        size_t length = static_cast<size_t>(end - token);
+        if (TokenEquals(token, length, L"Ctrl"))       mods |= MOD_CONTROL;
+        else if (TokenEquals(token, length, L"Alt"))   mods |= MOD_ALT;
+        else if (TokenEquals(token, length, L"Shift")) mods |= MOD_SHIFT;
+        else if (TokenEquals(token, length, L"Win"))   mods |= MOD_WIN;
         else return false;
-        if (end == std::wstring::npos) break;
-        pos = end + 1;
+        if (!*end) break;
+        token = end + 1;
     }
     if (mods == 0) return false;
     *out = mods;
@@ -232,31 +282,30 @@ bool ParseModifiers(LPCWSTR str, UINT* out)
 bool ParseKey(LPCWSTR str, UINT* out)
 {
     if (!str || !*str) return false;
-    std::wstring s(str);
-    size_t len = s.length();
+    size_t len = wcslen(str);
 
     if (len == 1) {
-        WCHAR c = s[0];
+        WCHAR c = str[0];
         if (c >= L'A' && c <= L'Z') { *out = (UINT)c; return true; }
         if (c >= L'0' && c <= L'9') { *out = (UINT)c; return true; }
     }
-    if (s[0] == L'F' && len >= 2 && len <= 3) {
-        int n = _wtoi(s.c_str() + 1);
+    if (str[0] == L'F' && len >= 2 && len <= 3) {
+        int n = ParseInteger(str + 1);
         if (n >= 1 && n <= 24) { *out = VK_F1 + (UINT)(n - 1); return true; }
         return false;
     }
-    if (s == L"Space")     { *out = VK_SPACE;   return true; }
-    if (s == L"Tab")       { *out = VK_TAB;     return true; }
-    if (s == L"Home")      { *out = VK_HOME;    return true; }
-    if (s == L"End")       { *out = VK_END;     return true; }
-    if (s == L"Insert")    { *out = VK_INSERT;  return true; }
-    if (s == L"Delete")    { *out = VK_DELETE;  return true; }
-    if (s == L"PageUp")    { *out = VK_PRIOR;   return true; }
-    if (s == L"PageDown")  { *out = VK_NEXT;    return true; }
-    if (s == L"Left")      { *out = VK_LEFT;    return true; }
-    if (s == L"Right")     { *out = VK_RIGHT;   return true; }
-    if (s == L"Up")        { *out = VK_UP;      return true; }
-    if (s == L"Down")      { *out = VK_DOWN;    return true; }
+    if (TokenEquals(str, len, L"Space"))    { *out = VK_SPACE;   return true; }
+    if (TokenEquals(str, len, L"Tab"))      { *out = VK_TAB;     return true; }
+    if (TokenEquals(str, len, L"Home"))     { *out = VK_HOME;    return true; }
+    if (TokenEquals(str, len, L"End"))      { *out = VK_END;     return true; }
+    if (TokenEquals(str, len, L"Insert"))   { *out = VK_INSERT;  return true; }
+    if (TokenEquals(str, len, L"Delete"))   { *out = VK_DELETE;  return true; }
+    if (TokenEquals(str, len, L"PageUp"))   { *out = VK_PRIOR;   return true; }
+    if (TokenEquals(str, len, L"PageDown")) { *out = VK_NEXT;    return true; }
+    if (TokenEquals(str, len, L"Left"))     { *out = VK_LEFT;    return true; }
+    if (TokenEquals(str, len, L"Right"))    { *out = VK_RIGHT;   return true; }
+    if (TokenEquals(str, len, L"Up"))       { *out = VK_UP;      return true; }
+    if (TokenEquals(str, len, L"Down"))     { *out = VK_DOWN;    return true; }
 
     return false;
 }
@@ -279,7 +328,7 @@ bool ReadConfig(LPCWSTR iniPath, UINT* mods, UINT* key, int* notif)
 
     if (!ParseModifiers(bufMods, mods)) return false;
     if (!ParseKey(bufKey, key)) return false;
-    *notif = _wtoi(bufNotif) ? 1 : 0;
+    *notif = ParseInteger(bufNotif) ? 1 : 0;
     return true;
 }
 
@@ -336,7 +385,7 @@ LRESULT CALLBACK OsdWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
         oldFont = SelectObject(hdc, font);
         RECT textRect = { 24, 88, rc.right - 24, 119 };
-        DrawTextW(hdc, g_state.osdText, -1, &textRect,
+        DrawTextW(hdc, g_state.deviceName, -1, &textRect,
                   DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         SelectObject(hdc, oldFont);
         DeleteObject(font);
@@ -373,7 +422,7 @@ LRESULT CALLBACK OsdWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-void ShowDeviceOsd(LPCWSTR deviceName)
+void ShowDeviceOsd()
 {
     if (!g_state.hOsd) {
         g_state.hOsd = CreateWindowExW(
@@ -390,7 +439,6 @@ void ShowDeviceOsd(LPCWSTR deviceName)
                               &borderColor, sizeof(borderColor));
     }
 
-    wcsncpy_s(g_state.osdText, deviceName, _TRUNCATE);
     g_state.osdAlpha = OSD_ALPHA;
     KillTimer(g_state.hOsd, OSD_HIDE_TIMER_ID);
     KillTimer(g_state.hOsd, OSD_FADE_TIMER_ID);
@@ -418,75 +466,31 @@ void QueueDeviceNotification()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Enum active render endpoints -> vector of (id, friendlyName)
-// ---------------------------------------------------------------------------
-struct EndpointInfo {
-    std::wstring id;
-    std::wstring name;
-};
-
-bool EnumActiveEndpoints(std::vector<EndpointInfo>& endpoints)
+bool GetFriendlyName(IMMDevice* device, WCHAR* out, size_t outSize)
 {
-    endpoints.clear();
-    ComPtr<IMMDeviceEnumerator> pEnum;
-    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
-                                  CLSCTX_ALL, IID_PPV_ARGS(&pEnum));
-    if (FAILED(hr)) return false;
-
-    ComPtr<IMMDeviceCollection> pCollection;
-    hr = pEnum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &pCollection);
-    if (FAILED(hr)) return false;
-
-    UINT count = 0;
-    pCollection->GetCount(&count);
-    for (UINT i = 0; i < count; ++i) {
-        ComPtr<IMMDevice> pDevice;
-        if (FAILED(pCollection->Item(i, &pDevice))) continue;
-
-        LPWSTR pwszId = nullptr;
-        if (FAILED(pDevice->GetId(&pwszId))) continue;
-        std::wstring devId(pwszId);
-        CoTaskMemFree(pwszId);
-
-        ComPtr<IPropertyStore> pStore;
-        std::wstring name;
-        if (SUCCEEDED(pDevice->OpenPropertyStore(STGM_READ, &pStore))) {
-            PROPVARIANT var;
-            PropVariantInit(&var);
-            if (SUCCEEDED(pStore->GetValue(PKEY_Device_FriendlyName, &var))) {
-                if (var.vt == VT_LPWSTR)
-                    name = var.pwszVal;
-                PropVariantClear(&var);
-            }
+    ComPtr<IPropertyStore> store;
+    if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &store))) {
+        PROPVARIANT value;
+        PropVariantInit(&value);
+        HRESULT hr = store->GetValue(PKEY_Device_FriendlyName, &value);
+        if (SUCCEEDED(hr) && value.vt == VT_LPWSTR && value.pwszVal && value.pwszVal[0]) {
+            wcsncpy_s(out, outSize, value.pwszVal, _TRUNCATE);
+            PropVariantClear(&value);
+            return true;
         }
-        if (name.empty()) name = L"Unknown output device";
-        endpoints.push_back({ std::move(devId), std::move(name) });
+        PropVariantClear(&value);
     }
-    return true;
+    wcsncpy_s(out, outSize, L"Unknown output device", _TRUNCATE);
+    return false;
 }
 
-// ---------------------------------------------------------------------------
-// Get the default multimedia endpoint ID
-// ---------------------------------------------------------------------------
-bool GetDefaultEndpointId(std::wstring& outId)
+bool GetDefaultEndpoint(IMMDeviceEnumerator* enumerator,
+                        ComPtr<IMMDevice>& device, LPWSTR* id)
 {
-    outId.clear();
-    ComPtr<IMMDeviceEnumerator> pEnum;
-    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
-                                  CLSCTX_ALL, IID_PPV_ARGS(&pEnum));
+    *id = nullptr;
+    HRESULT hr = enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &device);
     if (FAILED(hr)) return false;
-
-    ComPtr<IMMDevice> pDevice;
-    hr = pEnum->GetDefaultAudioEndpoint(eRender, eMultimedia, &pDevice);
-    if (FAILED(hr)) return false;
-
-    LPWSTR pwszId = nullptr;
-    hr = pDevice->GetId(&pwszId);
-    if (FAILED(hr)) return false;
-    outId = pwszId;
-    CoTaskMemFree(pwszId);
-    return true;
+    return SUCCEEDED(device->GetId(id));
 }
 
 // ---------------------------------------------------------------------------
@@ -498,8 +502,11 @@ bool SetDefaultEndpointAll(LPCWSTR deviceId)
     HRESULT hr = CoCreateInstance(CLSID_PolicyConfigClient, nullptr,
                                   CLSCTX_ALL, IID_PPV_ARGS(&pPolicy));
     if (FAILED(hr)) {
+        WCHAR hex[9];
+        FormatHex(hr, hex);
         WCHAR msg[128];
-        swprintf_s(msg, L"CoCreateInstance(IPolicyConfig) failed: 0x%08X", hr);
+        wcscpy_s(msg, L"CoCreateInstance(IPolicyConfig) failed: 0x");
+        wcscat_s(msg, hex);
         MessageBoxW(nullptr, msg, L"Debug", MB_OK);
         return false;
     }
@@ -508,8 +515,13 @@ bool SetDefaultEndpointAll(LPCWSTR deviceId)
     hr = pPolicy->SetDefaultEndpoint(deviceId, eMultimedia);
     if (SUCCEEDED(hr)) multimediaOk = true;
     else {
+        WCHAR hex[9];
+        FormatHex(hr, hex);
         WCHAR msg[256];
-        swprintf_s(msg, L"SetDefaultEndpoint(eMultimedia) failed: 0x%08X\nDeviceId: %s", hr, deviceId);
+        wcscpy_s(msg, L"SetDefaultEndpoint(eMultimedia) failed: 0x");
+        wcscat_s(msg, hex);
+        wcscat_s(msg, L"\nDeviceId: ");
+        wcsncat_s(msg, deviceId, _TRUNCATE);
         MessageBoxW(nullptr, msg, L"Debug", MB_OK);
     }
 
@@ -520,40 +532,85 @@ bool SetDefaultEndpointAll(LPCWSTR deviceId)
 }
 
 // ---------------------------------------------------------------------------
-// Rotate to next endpoint
-// Returns the new device name on success, empty string on failure
+// Rotate to the endpoint after the current default, wrapping to the first.
 // ---------------------------------------------------------------------------
-std::wstring RotateToNextDevice()
+bool RotateToNextDevice(WCHAR* newName, size_t newNameSize)
 {
-    std::vector<EndpointInfo> endpoints;
-    if (!EnumActiveEndpoints(endpoints) || endpoints.empty()) {
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
+                                  CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
+    if (FAILED(hr)) {
         ShowNotification(NOTIFICATION_TITLE, L"No active output devices", NIIF_WARNING);
-        return {};
+        return false;
     }
 
-    std::wstring defaultId;
-    if (!GetDefaultEndpointId(defaultId)) {
-        defaultId.clear();
+    ComPtr<IMMDeviceCollection> collection;
+    hr = enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection);
+    if (FAILED(hr)) {
+        ShowNotification(NOTIFICATION_TITLE, L"No active output devices", NIIF_WARNING);
+        return false;
     }
 
-    size_t idx = 0;
-    if (!defaultId.empty()) {
-        bool found = false;
-        for (size_t i = 0; i < endpoints.size(); ++i) {
-            if (endpoints[i].id == defaultId) { idx = i; found = true; break; }
+    ComPtr<IMMDevice> defaultDevice;
+    LPWSTR defaultId = nullptr;
+    GetDefaultEndpoint(enumerator.Get(), defaultDevice, &defaultId);
+
+    UINT count = 0;
+    collection->GetCount(&count);
+    ComPtr<IMMDevice> firstDevice;
+    ComPtr<IMMDevice> selectedDevice;
+    LPWSTR firstId = nullptr;
+    LPWSTR selectedId = nullptr;
+    bool selectNext = false;
+
+    for (UINT i = 0; i < count; ++i) {
+        ComPtr<IMMDevice> device;
+        if (FAILED(collection->Item(i, &device))) continue;
+
+        LPWSTR id = nullptr;
+        if (FAILED(device->GetId(&id))) continue;
+
+        if (!firstId) {
+            firstId = id;
+            firstDevice = device;
+            id = nullptr;
         }
-        if (!found) idx = 0; // current default not in list: pick first
-        else         idx = (idx + 1) % endpoints.size();
-    } else {
-        idx = 0; // no current default: pick first
+
+        LPCWSTR currentId = id ? id : firstId;
+        if (selectNext) {
+            selectedId = id;
+            selectedDevice = device;
+            id = nullptr;
+            break;
+        }
+
+        if (defaultId && wcscmp(currentId, defaultId) == 0) selectNext = true;
+        if (id) CoTaskMemFree(id);
     }
 
-    if (!SetDefaultEndpointAll(endpoints[idx].id.c_str())) {
+    if (!firstId) {
+        if (defaultId) CoTaskMemFree(defaultId);
+        ShowNotification(NOTIFICATION_TITLE, L"No active output devices", NIIF_WARNING);
+        return false;
+    }
+
+    if (!selectedId) {
+        selectedId = firstId;
+        selectedDevice = firstDevice;
+        firstId = nullptr;
+    }
+
+    GetFriendlyName(selectedDevice.Get(), newName, newNameSize);
+    bool changed = SetDefaultEndpointAll(selectedId);
+    if (defaultId) CoTaskMemFree(defaultId);
+    if (firstId) CoTaskMemFree(firstId);
+    CoTaskMemFree(selectedId);
+
+    if (!changed) {
         ShowNotification(NOTIFICATION_TITLE, L"Could not change the audio output device", NIIF_WARNING);
-        return {};
+        return false;
     }
-
-    return endpoints[idx].name;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -631,6 +688,15 @@ void UpdateTrayTooltip(LPCWSTR text)
     nid.uFlags = NIF_TIP;
     wcsncpy_s(nid.szTip, text, _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+void SwitchToNextDevice()
+{
+    WCHAR newName[_countof(g_state.deviceName)];
+    if (!RotateToNextDevice(newName, _countof(newName))) return;
+    wcsncpy_s(g_state.deviceName, newName, _TRUNCATE);
+    UpdateTrayTooltip(newName);
+    QueueDeviceNotification();
 }
 
 // ---------------------------------------------------------------------------
@@ -715,10 +781,8 @@ void ReloadConfig()
     if (!RegisterHotKey(g_state.hwnd, HOTKEY_ID,
                         newMods | MOD_NOREPEAT, newVk)) {
         // Try to restore old hotkey
-        WCHAR msg[256];
-        swprintf_s(msg, L"Could not register the new hotkey.\n"
-                   L"Keeping the current hotkey.");
-        ShowError(msg);
+        ShowError(L"Could not register the new hotkey.\n"
+                  L"Keeping the current hotkey.");
         if (g_state.modifiers && g_state.vk) {
             RegisterHotKey(g_state.hwnd, HOTKEY_ID,
                            g_state.modifiers | MOD_NOREPEAT, g_state.vk);
@@ -749,12 +813,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_HOTKEY: {
         if (wParam == HOTKEY_ID) {
-            std::wstring newName = RotateToNextDevice();
-            if (!newName.empty()) {
-                wcsncpy_s(g_state.deviceName, newName.c_str(), _TRUNCATE);
-                UpdateTrayTooltip(newName.c_str());
-                QueueDeviceNotification();
-            }
+            SwitchToNextDevice();
         }
         return 0;
     }
@@ -763,7 +822,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam == NOTIFICATION_TIMER_ID) {
             KillTimer(hwnd, NOTIFICATION_TIMER_ID);
             if (g_state.notifications && g_state.deviceName[0]) {
-                ShowDeviceOsd(g_state.deviceName);
+                ShowDeviceOsd();
             }
             return 0;
         }
@@ -822,12 +881,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 ShowTrayMenu();
                 return 0;
             case WM_LBUTTONDBLCLK: {
-                std::wstring newName = RotateToNextDevice();
-                if (!newName.empty()) {
-                    wcsncpy_s(g_state.deviceName, newName.c_str(), _TRUNCATE);
-                    UpdateTrayTooltip(newName.c_str());
-                    QueueDeviceNotification();
-                }
+                SwitchToNextDevice();
                 return 0;
             }
             }
@@ -929,10 +983,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     // 8. Register hotkey
     if (!RegisterHotKey(hwnd, HOTKEY_ID,
                         g_state.modifiers | MOD_NOREPEAT, g_state.vk)) {
-        WCHAR msg[256];
-        swprintf_s(msg, L"Could not register the hotkey.\n"
-                   L"The shortcut may be in use by another application.");
-        ShowError(msg);
+        ShowError(L"Could not register the hotkey.\n"
+                  L"The shortcut may be in use by another application.");
         CoUninitialize();
         CloseHandle(hMutex);
         return 1;
@@ -941,16 +993,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
     // 9. Get initial device name for tray
     {
-        std::wstring defId;
-        if (GetDefaultEndpointId(defId)) {
-            std::vector<EndpointInfo> endpoints;
-            if (EnumActiveEndpoints(endpoints)) {
-                for (auto& ep : endpoints) {
-                    if (ep.id == defId) {
-                        wcsncpy_s(g_state.deviceName, ep.name.c_str(), _TRUNCATE);
-                        break;
-                    }
-                }
+        ComPtr<IMMDeviceEnumerator> enumerator;
+        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
+                                       CLSCTX_ALL, IID_PPV_ARGS(&enumerator)))) {
+            ComPtr<IMMDevice> device;
+            LPWSTR id = nullptr;
+            if (GetDefaultEndpoint(enumerator.Get(), device, &id)) {
+                GetFriendlyName(device.Get(), g_state.deviceName,
+                                _countof(g_state.deviceName));
+                CoTaskMemFree(id);
             }
         }
     }

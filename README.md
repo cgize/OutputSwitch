@@ -57,11 +57,11 @@ Right-click the tray icon and toggle **Start with Windows**. The preference is w
 
 ## Build Size
 
-Run `build.bat` to produce the smaller executable (about 59 KB). It requires
+Run `build.bat` to produce the smaller executable (about 38 KB). It requires
 the x64 [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
 to be installed on the target computer.
 
-Run `build.bat standalone` to produce a self-contained executable (about 183
+Run `build.bat standalone` to produce a self-contained executable (about 129
 KB) that embeds the Microsoft C runtime.
 
 ## License
