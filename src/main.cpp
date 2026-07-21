@@ -38,8 +38,6 @@ constexpr WCHAR STARTUP_REG_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersi
 constexpr WCHAR DEFAULT_MODS[] = L"Ctrl+Alt";
 constexpr WCHAR DEFAULT_KEY[]  = L"S";
 constexpr int   DEFAULT_NOTIF  = 1;
-constexpr UINT_PTR NOTIFICATION_TIMER_ID = 1;
-constexpr UINT NOTIFICATION_DEBOUNCE_MS = 500;
 constexpr UINT_PTR OSD_HIDE_TIMER_ID = 1;
 constexpr UINT_PTR OSD_FADE_TIMER_ID = 2;
 constexpr UINT OSD_VISIBLE_MS = 1600;
@@ -462,7 +460,7 @@ void ShowDeviceOsd()
 void QueueDeviceNotification()
 {
     if (g_state.notifications) {
-        SetTimer(g_state.hwnd, NOTIFICATION_TIMER_ID, NOTIFICATION_DEBOUNCE_MS, nullptr);
+        ShowDeviceOsd();
     }
 }
 
@@ -764,9 +762,6 @@ void ReloadConfig()
     }
 
     g_state.notifications = (newNotif != 0);
-    if (!g_state.notifications) {
-        KillTimer(g_state.hwnd, NOTIFICATION_TIMER_ID);
-    }
 
     bool hotkeyChanged = (newMods != g_state.modifiers) ||
                          (newVk    != g_state.vk);
@@ -818,16 +813,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
-    case WM_TIMER:
-        if (wParam == NOTIFICATION_TIMER_ID) {
-            KillTimer(hwnd, NOTIFICATION_TIMER_ID);
-            if (g_state.notifications && g_state.deviceName[0]) {
-                ShowDeviceOsd();
-            }
-            return 0;
-        }
-        break;
-
     case WM_COMMAND: {
         WORD id = LOWORD(wParam);
         switch (id) {
@@ -852,7 +837,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_DESTROY:
-        KillTimer(hwnd, NOTIFICATION_TIMER_ID);
         if (g_state.hOsd) {
             DestroyWindow(g_state.hOsd);
             g_state.hOsd = nullptr;
